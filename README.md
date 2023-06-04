@@ -35,3 +35,7 @@
   #define TOUCH_RST 7
   ```
 
+## 참고자료
+- https://github.com/Makerfabs/ESP32-S3-Round-SPI-TFT-with-Touch-1.28
+- 
+- 
