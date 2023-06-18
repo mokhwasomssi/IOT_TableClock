@@ -1,17 +1,22 @@
 #include <string.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include "EEPROM.h"
 #include "time.h"
 #include <tinyxml2.h>
+#include <stdio.h>
+
 
 // 공공데이터포털 개인 API 인증키
 #define PUBLIC_DATA_API_KEY "HHec4G%2FFjjMjQIfzZa3yfZuItK93BQh%2BC%2FwkITl%2FCu8X3h%2BAjlF74glKicSnEN%2BVeZEOvstt07Zz%2Be%2BvmAlFVQ%3D%3D" 
-
 // OpenWeather API 키
 #define OPENWEATHER_API_KET "8d27c680ce67b6ffebcf09d005cdd444"
+// Finnhub Stock API 키
+#define FINNHUB_STOCK_API_KEY "ci77auhr01quivoc1e0gci77auhr01quivoc1e10"
+
 
 #define EEPROM_SIZE 256
 
@@ -46,9 +51,35 @@ typedef struct
     int predictTime2;
 } BUS;
 
+typedef struct
+{
+    char code[9]; // 단축코드
+
+    char name[120]; // 종목명
+    char date[8]; // 기준일자
+    char closePrice[12]; // 종가
+    char change[10]; // 대비
+    char percentChange[11]; // 등락률
+
+} STOCK_KR;
+
+typedef struct
+{
+    char name[120]; // 종목명
+
+    int date; // 기준일자
+    float currentPrice; // 현재가
+    float change; // 대비
+    float percentChange; // 등락률
+
+} STOCK_US;
+
 TABLECLOCK_STATE my_state = WIDGET_NULL;
+
 USER_DATA my_data;
 BUS my_bus;
+STOCK_KR myStockKR;
+STOCK_US myStockUS;
 
 // NTP server to request epoch time
 const char* ntpServer = "pool.ntp.org";
@@ -58,12 +89,9 @@ const int daylightOffset_sec = 0;
 wifi_mode_t esp_wifi_mode = WIFI_MODE_NULL;
 WiFiClient mySocket;
 HTTPClient myHTTP;
-DynamicJsonDocument doc(2048);
 
 using namespace tinyxml2;
-// char * xmlDoc = "<root><body><element>7</element><element2>8</element2>></body></root>";
-// char * xmlDoc = "<response><comMsgHeader/><msgHeader><queryTime>2023-06-18 01:25:40.486</queryTime><resultCode>0</resultCode><resultMessage>정상적으로 처리되었습니다.</resultMessage></msgHeader><msgBody><busStationList><centerYn>N</centerYn><stationId>228000162</stationId></busStationList></msgBody></response>";
-
+DynamicJsonDocument jsonDoc(2048);
 char xmlDoc[4096];
 
 void getTime()
@@ -82,12 +110,12 @@ void getWeather()
 
     if(myHTTP.GET() == HTTP_CODE_OK)
     {
-    printf("weather Received! \r\n");
-    deserializeJson(doc, myHTTP.getString());
-    const char *cityStr = doc["name"];
-    const char *currWeather = doc["weather"][0]["main"];
-    float temp = (float)(doc["main"]["temp"]) - 273.0;
-    printf("%s의 날씨 : %s, 온도 : %f \r\n", cityStr, currWeather, temp);
+        printf("weather Received! \r\n");
+        deserializeJson(jsonDoc, myHTTP.getString());
+        const char *cityStr = jsonDoc["name"];
+        const char *currWeather = jsonDoc["weather"][0]["main"];
+        float temp = (float)(jsonDoc["main"]["temp"]) - 273.0;
+        printf("%s의 날씨 : %s, 온도 : %f \r\n", cityStr, currWeather, temp);
     }
     else
     {
@@ -227,6 +255,114 @@ void getBusArrival() // getBusArrivalItem Operation
     myHTTP.end();
 }
 
+void getStockPriceKRPreviousDay(const char* code) // 한국주식 전날 시세
+{
+    Serial.println("-------------------------------------");
+    Serial.println("[REQUEST] KR stock");
+
+    int httpCode;
+    char buffer[256];
+    strcpy(myStockKR.code, code);
+
+    snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo?serviceKey=%s&numOfRows=1&pageNo=1&likeSrtnCd=%s", PUBLIC_DATA_API_KEY, myStockKR.code);
+    myHTTP.begin(mySocket, buffer);
+
+    httpCode = myHTTP.GET();
+    printf("[HTTP CODE] %d \r\n", httpCode);
+
+    if(httpCode == HTTP_CODE_OK)
+    {
+        Serial.println("[OK]");
+        strcpy(xmlDoc, myHTTP.getString().c_str());
+    }
+    else
+    {
+        Serial.println("[ERROR]");
+    }
+
+    myHTTP.end();
+
+    XMLDocument xmlDocument;
+    if(xmlDocument.Parse(xmlDoc)!= XML_SUCCESS)
+    {
+        Serial.println("[PARSE ERROR]");  
+        return;
+    };
+
+    XMLNode * root = xmlDocument.RootElement();
+
+    // 종목명
+    XMLElement * element = root->FirstChildElement("body")->FirstChildElement("items")->FirstChildElement("item")->FirstChildElement("itmsNm");
+    strcpy(myStockKR.name, element->GetText());
+    printf("[종목명] %s \r\n", myStockKR.name);
+
+    // 기준일자
+    element = root->FirstChildElement("body")->FirstChildElement("items")->FirstChildElement("item")->FirstChildElement("basDt");
+    strcpy(myStockKR.date, element->GetText());
+    printf("[기준일자] %s \r\n", myStockKR.date);
+
+    // 종가
+    element = root->FirstChildElement("body")->FirstChildElement("items")->FirstChildElement("item")->FirstChildElement("clpr");
+    strcpy(myStockKR.closePrice, element->GetText());
+    printf("[종가] %s \r\n", myStockKR.closePrice);
+
+    // 대비
+    element = root->FirstChildElement("body")->FirstChildElement("items")->FirstChildElement("item")->FirstChildElement("vs");
+    strcpy(myStockKR.change, element->GetText());
+    printf("[대비] %s \r\n", myStockKR.change);
+
+
+    // 등락률 
+    element = root->FirstChildElement("body")->FirstChildElement("items")->FirstChildElement("item")->FirstChildElement("fltRt");
+    strcpy(myStockKR.percentChange, element->GetText());
+    printf("[등락률] %s \r\n", myStockKR.percentChange);
+
+    Serial.println("-------------------------------------");
+}
+
+void getStockPriceUSRealTime(const char* name) // 미국주식 실시간 시세, 
+{
+    Serial.println("-------------------------------------");
+    Serial.println("[REQUEST] US Stock");
+
+    int httpCode;
+    char buffer[256];
+    strcpy(myStockUS.name, name);
+    snprintf(buffer, sizeof(buffer), "https://finnhub.io/api/v1/quote?symbol=%s&token=%s", myStockUS.name, FINNHUB_STOCK_API_KEY);
+
+    WiFiClientSecure *client = new WiFiClientSecure;
+    client->setInsecure();
+    myHTTP.begin(*client, buffer);
+
+    httpCode = myHTTP.GET();
+    printf("[HTTP CODE] %d \r\n", httpCode);
+
+    if(httpCode == HTTP_CODE_OK)
+    {
+        Serial.println("[OK]");
+        deserializeJson(jsonDoc, myHTTP.getString());
+    }
+    else
+    {
+        Serial.println("[ERROR]");
+    }
+
+    myHTTP.end();
+
+    myStockUS.date = (int)(jsonDoc["t"]);
+    myStockUS.currentPrice = (float)(jsonDoc["c"]);
+    myStockUS.change = (float)(jsonDoc["d"]);
+    myStockUS.percentChange = (float)(jsonDoc["dp"]);
+
+    printf("[종목명] %s \r\n", myStockUS.name);
+    printf("[기준일자] %d \r\n", myStockUS.date);
+    printf("[현재가] %.2f \r\n", myStockUS.currentPrice);
+    printf("[대비] %.2f \r\n", myStockUS.change);
+    printf("[등락률] %.2f \r\n", myStockUS.percentChange);
+
+    Serial.println("-------------------------------------");
+}
+
 
 void clearUserData()
 {
@@ -238,7 +374,7 @@ void clearUserData()
 
 void resetUserData(bool overwrite)
 {
-    neopixelWrite(RGB_BUILTIN,0xFF,0xFF,0x00); // yellow
+    // neopixelWrite(RGB_BUILTIN,0xFF,0xFF,0x00); // yellow
 
     char input[EEPROM_SIZE] = {0};
     char output[EEPROM_SIZE] = {0};
@@ -371,7 +507,7 @@ parse:
 
     initWiFi();
 
-    neopixelWrite(RGB_BUILTIN,0x00,0xFF,0x00); // green
+    // neopixelWrite(RGB_BUILTIN,0x00,0xFF,0x00); // green
 }
 
 void initWiFi()
@@ -423,8 +559,14 @@ void setup() {
     // Init and get the time
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
-    getBusStationId();
-    getStaOrder();
+    // getBusStationId();
+    // getStaOrder();
+
+    getStockPriceKRPreviousDay("005930"); // 삼성전자
+    delay(500);
+
+    getStockPriceUSRealTime("MSFT"); // 마이크로소프트
+    delay(500);
 }
 
 
@@ -436,17 +578,25 @@ void loop() {
 
         if(key == 'r')
             resetUserData(1);
-        else if(key == 't')
-            getTime();
-        else if(key == 'w')
-            getWeather();
-        else if(key == 'b')
-            getBusArrival();
+        // else if(key == 't')
+        //     getTime();
+        // else if(key == 'w')
+        //     getWeather();
+        // else if(key == 'b')
+        //     getBusArrival();
+        else if(key == 'k')
+        {
+            getStockPriceKRPreviousDay("005930");
+        }
+        else if(key == 'u')
+        {
+            getStockPriceUSRealTime("MSFT");
+        }
     }
 
-    if(!checkWiFiStatus())
-    {
-        Serial.println("WiFi Disconnected, Check WiFi Signal");
-        resetUserData(1);
-    }
+    // if(!checkWiFiStatus())
+    // {
+    //     Serial.println("WiFi Disconnected, Check WiFi Signal");
+    //     resetUserData(1);
+    // }
 }

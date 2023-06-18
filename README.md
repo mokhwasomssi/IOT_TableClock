@@ -50,7 +50,7 @@
   - https://github.com/Makerfabs/ESP32-S3-Round-SPI-TFT-with-Touch-1.28
 - 현재 날짜 및 시각
   - https://randomnerdtutorials.com/esp32-date-time-ntp-client-server-arduino/
-- 
+- [ESP32 HTTPS Requests (Arduino IDE)](https://randomnerdtutorials.com/esp32-https-requests/)
 
 
 ## 예상질문
