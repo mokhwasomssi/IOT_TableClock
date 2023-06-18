@@ -27,6 +27,8 @@
 - 핀연결
     ```c
   /* GC9A01 display */
+  //#define VCC           // 3.3V
+  //#define GND           // GND
   #define TFT_MOSI 3     
   // #define TFT_MISO     // NC  
   #define TFT_SCLK 0  
@@ -43,14 +45,15 @@
   ```
   - API
     - [Weather API](https://openweathermap.org/)
+    - []
 
 
 ## 참고자료
-- 원형 디스플레이
-  - https://github.com/Makerfabs/ESP32-S3-Round-SPI-TFT-with-Touch-1.28
-- 현재 날짜 및 시각
-  - https://randomnerdtutorials.com/esp32-date-time-ntp-client-server-arduino/
+- [원형 디스플레이](https://github.com/Makerfabs/ESP32-S3-Round-SPI-TFT-with-Touch-1.28)
+- [현재 날짜 및 시각](https://randomnerdtutorials.com/esp32-date-time-ntp-client-server-arduino/)
 - [ESP32 HTTPS Requests (Arduino IDE)](https://randomnerdtutorials.com/esp32-https-requests/)
+- [한글 라이브러리(M5Stack, M5StickC, TFT_eSPI,U8g2)](https://blog.naver.com/PostView.nhn?isHttpsRedirect=true&blogId=sanguru&logNo=221854830624&parentCategoryNo=59&categoryNo=&viewDate=&isShowPopularPosts=false&from=postView)
+- [C Epoch Converter Routines](https://www.epochconverter.com/programming/c)
 
 
 ## 예상질문
