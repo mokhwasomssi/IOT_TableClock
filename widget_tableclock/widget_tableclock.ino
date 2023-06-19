@@ -17,11 +17,13 @@ TFT_eSPI tft = TFT_eSPI();
 #include "CST816S.h"
 
 // Image
+#include "DUCK_HI_240.h"
 #include "DUCK_TIME_240.h"
 #include "DUCK_WEATHER_240.h"
 #include "DUCK_BUS_240.h"
 #include "DUCK_STOCK_KR_240.h"
 #include "DUCK_STOCK_US_240.h"
+#include "DUCK_SETTING_240.h"
 
 /*************************** [CONSTANT Definition] ************************************/
 
@@ -55,10 +57,17 @@ typedef enum {
 
 typedef struct
 {
-  char wifi_id[32];
-  char wifi_pw[32];
-  char bus_id[32];
-  char stock_num[32];
+  char wifiId[32];
+  char wifiPw[32];
+  char city[16];
+  char bus[32];
+  char KR[32];
+  char US[32];
+
+  uint8_t page;
+  uint8_t page_we;
+  uint8_t page_kr;
+  uint8_t page_us;
 } USER_DATA;
 
 typedef struct
@@ -75,7 +84,7 @@ typedef struct
 
 typedef struct
 {
-  char city[20];
+  char city[2][20];
   char weather[20];
   int temp;
 } WEATHER;
@@ -90,8 +99,6 @@ typedef struct
   int routeId;            // 노선 아이디
   int staOrder;           // 정류소 순번
 
-  char routeName_temp[30];
-
   int locationNo1;
   int predictTime1;
   int locationNo2;
@@ -100,7 +107,7 @@ typedef struct
 
 typedef struct
 {
-  char code[9];  // 단축코드
+  char code[3][9];         // 단축코드
 
   char name[120];          // 종목명
   char date[9];            // 기준일자
@@ -111,7 +118,7 @@ typedef struct
 
 typedef struct
 {
-  char name[120];  // 종목명
+  char name[3][30];        // 종목명
 
   int date;             // 기준일자
   float currentPrice;   // 현재가
@@ -127,8 +134,7 @@ CST816S touch(TOUCH_SDA, TOUCH_SCL, TOUCH_RST, TOUCH_INT);
 
 TABLECLOCK_STATE my_state = WIDGET_NULL;
 
-USER_DATA my_data;
-
+USER_DATA myData;
 TIME myTime;
 BUS myBus;
 WEATHER myWeather;
@@ -141,239 +147,529 @@ const long gmtOffset_sec = 32400;  // +9:00 (9hours*60mins*60seconds)
 const int daylightOffset_sec = 0;
 
 wifi_mode_t esp_wifi_mode = WIFI_MODE_NULL;
-WiFiClient mySocket;
-HTTPClient myHTTP;
 
 using namespace tinyxml2;
 DynamicJsonDocument jsonDoc(2048);
-char xmlDoc[4096];
+char xmlDoc[10000];
 /*************************** [Variable Declaration] ************************************/
 
 /*************************** [Function Declaration] ************************************/
 void clearUserData();
-void resetUserData(bool overwrite);
+void getUserData(bool overwrite);
+void parseUserData();
 
 void initWiFi();
 bool checkWiFiStatus();
 
-void getDateTime();
-void getWeather(const char* city);
+bool getDateTime();
+bool getWeather(const char* city);
 
-void getBusStationId(int mobileNo);
-void getStaOrder();
-void getBusArrival(const char* routeName, int stationId, int routeId, int staOrder);
+bool getBusStationId(int mobileNo);
+bool getStaOrder(int stationId, const char* routeName);
+bool getBusArrival(const char* routeName, int stationId, int routeId, int staOrder);
 
-void getStockPriceKRPreviousDay(const char* code);
-void getStockPriceUSRealTime(const char* name);
+bool getStockPriceKRPreviousDay(const char* code);
+bool getStockPriceUSRealTime(const char* name);
 /*************************** [Function Declaration] ************************************/
 
-void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(115200);
-  touch.begin();
+void setup() 
+{
+    // put your setup code here, to run once:
+    Serial.begin(115200);
+    touch.begin();
 
-  tft.init();
-  tft.setRotation(0);
-  tft.setSwapBytes(true);
-  img.setSwapBytes(true);
-  tft.fillScreen(TFT_WHITE);
-  img.createSprite(240, 240);
+    tft.init();
+    tft.setRotation(0);
+    tft.setSwapBytes(true);
+    img.setSwapBytes(true);
+    tft.fillScreen(TFT_WHITE);
+    img.createSprite(240, 240);
 
-  Serial.println();
-  Serial.println();
-  Serial.println("-------------------------------------");
-  Serial.println("----------widget_tableclock----------");
-  Serial.println("-------------------------------------");
-  Serial.println();
-  Serial.println();
+    Serial.println();
+    Serial.println();
+    Serial.println("-------------------------------------");
+    Serial.println("----------widget_tableclock----------");
+    Serial.println("-------------------------------------");
+    Serial.println();
+    Serial.println();
 
-  resetUserData(0);
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-
-  img.pushImage(0, 0, 240, 240, DUCK_TIME_240);
-  img.pushSprite(0, 0);
+    getUserData(0);
 }
 
-void loop() {
-  // Keyboard Interrupt
-  if (Serial.available()) {
-    char key = Serial.read();
+uint32_t tick_cur = 0;
+uint32_t tick_old[10] = {0};
+void loop() 
+{
+    tick_cur = millis();
 
-    if (key == 'r') resetUserData(1);
-    else if (key == 't') getDateTime();
-    else if (key == 'w') getWeather("Yongin");
-    else if (key == 'b') getBusArrival("66-4", 200000177, 200000037, 19);
-    else if (key == 'k') getStockPriceKRPreviousDay("005930");
-    else if (key == 'u') getStockPriceUSRealTime("MSFT");
-  }
+    // Keyboard Interrupt
+    if (Serial.available()) 
+    {
+        char key = Serial.read();
 
-  // if(!checkWiFiStatus())
-  // {
-  //     Serial.println("WiFi Disconnected, Check WiFi Signal");
-  //     resetUserData(1);
-  // }
+        if (key == 'r') getUserData(1);
+        // else if (key == 't') getDateTime();
+        // else if (key == 'w') while(!getWeather(myWeather.city[0])) delay(1000);
+        // else if (key == 'b') while(!getBusArrival(myBus.routeName, myBus.stationId, myBus.routeId, myBus.staOrder)) delay(1000);
+        // else if (key == 'k') while(!getStockPriceKRPreviousDay(myStockKR.code[0])) delay(1000);
+        // else if (key == 'u') while(!getStockPriceUSRealTime(myStockUS.name[0])) delay(3000);
+    }
 
-  // if(touch.available())
-  // {
-  //     Serial.print(touch.data.x);
-  //     Serial.print(" ");
-  //     Serial.print(touch.data.y);
-  //     Serial.print(" ");
-  //     Serial.println(touch.gesture().c_str());
+    if((tick_cur - tick_old[0]) > 500)
+    {
+        if(touch.available())
+        {
+            Serial.println("-------------------------------------");
+            Serial.println("[TOUCH] Current Page");
+            switch (touch.data.gestureID) 
+            {
+                case SWIPE_LEFT:
+                    if(myData.page < 4) myData.page++;
+                    Serial.println("SWIPE_LEFT");
+                    break;
+                case SWIPE_RIGHT:
+                    if(myData.page > 0) myData.page--;
+                    Serial.println("SWIPE_RIGHT");
+                    break;
+                case SWIPE_UP:
+                    if(myData.page == 1)
+                    {
+                        if(myData.page_we < 1) myData.page_we++;
+                    }
+                    else if(myData.page == 3)
+                    {
+                        if(myData.page_kr < 2) myData.page_kr++;
+                    }
+                    else if(myData.page == 4)
+                    {
+                        if(myData.page_us < 2) myData.page_us++;
+                    }
+                    Serial.println("SWIPE_UP");
+                    break;
+                case SWIPE_DOWN:
+                    if(myData.page == 1)
+                    {
+                        if(myData.page_we > 0) myData.page_we--;
+                    }
+                    else if(myData.page == 3) 
+                    {
+                        if(myData.page_kr > 0) myData.page_kr--;
+                    }
+                    else if(myData.page == 4) 
+                    {
+                        if(myData.page_us > 0) myData.page_us--;
+                    }
+                    Serial.println("SWIPE_DOWN");
+                    break;
+                default:
+                    Serial.println("NONE");
+                    goto ignore;
+                    break;
+            }
 
-  //     tft.fillScreen(TFT_BLACK);
-  //     tft.setCursor(100, 120);
-  //     tft.setTextColor(TFT_WHITE);
-  //     tft.setTextSize(2);
-  //     tft.print(touch.data.x);
-  //     tft.print(" ");
-  //     tft.println(touch.data.y);
-  //     tft.setCursor(80, 160);
-  //     tft.println(touch.gesture().c_str());
-  // }
+            printf("[PAGE] %d\r\n", myData.page);
+            printf("[PAGE_WE] %d\r\n", myData.page_we);
+            printf("[PAGE_KR] %d\r\n", myData.page_kr);
+            printf("[PAGE_US] %d\r\n", myData.page_us);
+
+            switch(myData.page)
+            {
+                case 0:
+                    getDateTime();
+                    tick_old[1] = tick_cur;
+                break;
+                case 1:
+                    while(!getWeather(myWeather.city[myData.page_we])) delay(1000);
+                    tick_old[2] = tick_cur;
+                break;
+                case 2:
+                    while(!getBusArrival(myBus.routeName, myBus.stationId, myBus.routeId, myBus.staOrder)) delay(1000);
+                    tick_old[3] = tick_cur;
+                break;
+                case 3:
+                    while(!getStockPriceKRPreviousDay(myStockKR.code[myData.page_kr])) delay(1000);
+                    tick_old[4] = tick_cur;
+                break;
+                case 4:
+                    while(!getStockPriceUSRealTime(myStockUS.name[myData.page_us])) delay(1000);
+                    tick_old[5] = tick_cur;
+                break;
+                default:
+                    Serial.println("[ERROR] Wrong Page");
+                break;
+            }
+ignore:
+            Serial.println("-------------------------------------");
+        }
+        tick_old[0] = tick_cur;
+    }
+
+    if(((tick_cur - tick_old[1]) > 1000) && (myData.page == 0))
+    {
+        getDateTime();
+        tick_old[1] = tick_cur;
+    } 
+
+    if(((tick_cur - tick_old[2]) > 30000) && (myData.page == 1))
+    {
+        while(!getWeather(myWeather.city[myData.page_we])) delay(1000);
+        tick_old[2] = tick_cur;
+    } 
+
+    if(((tick_cur - tick_old[3]) > 15000) && (myData.page == 2))
+    {
+        while(!getBusArrival(myBus.routeName, myBus.stationId, myBus.routeId, myBus.staOrder)) delay(1000);
+        tick_old[3] = tick_cur;
+    } 
+
+    if(((tick_cur-tick_old[4]) > (1000*60*60)) && (myData.page == 3))
+    {
+        while(!getStockPriceKRPreviousDay(myStockKR.code[myData.page_kr])) delay(1000);
+
+        if(!checkWiFiStatus())
+        {
+            Serial.println("[ERROR] WiFi Disconnect");
+            getUserData(1);
+        }
+        tick_old[4] = tick_cur;
+    }
+
+    if(((tick_cur-tick_old[5]) > 15000) && (myData.page == 4))
+    {
+        while(!getStockPriceUSRealTime(myStockUS.name[myData.page_us])) delay(1000);
+        tick_old[5] = tick_cur;
+    }
 }
 
 /***************************Function Definition************************************/
-void clearUserData() {
-  memset(my_data.wifi_id, '\0', 32);
-  memset(my_data.wifi_pw, '\0', 32);
-  memset(my_data.bus_id, '\0', 32);
-  memset(my_data.stock_num, '\0', 32);
+void clearUserData() 
+{
+  memset(&myData, 0, sizeof(USER_DATA));
+  memset(&myTime, 0, sizeof(TIME));
+  memset(&myBus, 0, sizeof(BUS));
+  memset(&myWeather, 0, sizeof(WEATHER));
+  memset(&myStockKR, 0, sizeof(STOCK_KR));
+  memset(&myStockUS, 0, sizeof(STOCK_US));
+  memset(&myData, 0, sizeof(USER_DATA));
+  memset(&myData, 0, sizeof(USER_DATA));
+
+  memset(xmlDoc, 0, sizeof(xmlDoc));
 }
 
-void resetUserData(bool overwrite) {
-  // neopixelWrite(RGB_BUILTIN,0xFF,0xFF,0x00); // yellow
+void getUserData(bool overwrite) 
+{
+    // 화면 전환
+    img.pushImage(0, 0, 240, 240, DUCK_SETTING_240);
+    img.pushSprite(0, 0);
 
-  char input[EEPROM_SIZE] = { 0 };
-  char output[EEPROM_SIZE] = { 0 };
-  uint16_t index = 0;
-  uint16_t data = 0;
-  bool input_flag = false;
-  uint8_t err_chk_1 = 0;
-  uint8_t err_chk_2 = 0;
-  uint8_t param_start = 0;
-  uint8_t param_end = 0;
+    // setting...
+    tft.setCursor(30, 55);  // 중앙정렬
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(3);
+    tft.print("Setting...");
 
-  if (!EEPROM.begin(EEPROM_SIZE)) {
-    Serial.println("failed to initialise EEPROM");
-    return;
-  }
+    char input[EEPROM_SIZE] = { 0 };
+    char output[EEPROM_SIZE] = { 0 };
+    uint16_t index = 0;
+    uint16_t data = 0;
+    bool input_flag = false;
+    uint8_t err_chk_1 = 0;
+    uint8_t err_chk_2 = 0;
+    uint8_t param_start = 0;
+    uint8_t param_end = 0;
 
-  if (overwrite)
-    goto reset;
+    if (!EEPROM.begin(EEPROM_SIZE)) 
+    {
+        Serial.println("failed to initialise EEPROM");
+        return;
+    }
 
-  EEPROM.readString(0, output, EEPROM_SIZE);  // read eeprom data
-  if (output[0] == '[')
-    goto parse;
+    if (overwrite)
+        goto reset;
+
+    EEPROM.readString(0, output, EEPROM_SIZE);  // read eeprom data
+    if (output[0] == '[')
+        goto parse;
 
 reset:
-  clearUserData();
+    clearUserData();
 
-  Serial.println("--------------------------------");
-  Serial.println("Reset User Data Start");
-  Serial.println("--------------------------------");
+    Serial.println("--------------------------------");
+    Serial.println("Reset User Data Start");
 
-  Serial.println("Clear User Data");
-  for (int i = 0; i < EEPROM_SIZE; i++)
-    EEPROM.write(i, 0xFF);
-  EEPROM.commit();
-  delay(500);
+    Serial.println("Clear User Data");
+    for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0xFF);
+    EEPROM.commit();
+    delay(500);
 
-  Serial.println("Enter [WiFi ID][WiFi PW][BUS1, BUS2, BUS3][STOCK1,STOCK2,STOCK3]");
+    Serial.println("Enter [WiFi ID][WiFi PW][CITY1, CITY2][BUS, STATION][KR1, KR2, KR3][US1, US2, US3]");
+    Serial.println("--------------------------------");
 
-  while (1)  // wait user data
-  {
-    while (Serial.available()) {
-      input[index] = Serial.read();
-      if (input[index] == '[') err_chk_1++;
-      if (input[index] == ']') err_chk_2++;
+    while (1)  // wait user data
+    {
+        while (Serial.available()) 
+        {
+            input[index] = Serial.read();
+            if (input[index] == '[') err_chk_1++;
+            if (input[index] == ']') err_chk_2++;
 
-      index++;
-      input_flag = true;
-    }
+            index++;
+            input_flag = true;
+        }
 
-    if (input_flag) {
-      if ((err_chk_1 == 4) && (err_chk_2 == 4))  // check & save user data
-      {
-        EEPROM.writeString(0, input);
-        EEPROM.commit();
-        delay(500);
+        if (input_flag) 
+        {
+            if ((err_chk_1 == 6) && (err_chk_2 == 6))  // check & save user data
+            {
+                EEPROM.writeString(0, input);
+                EEPROM.commit();
+                delay(500);
 
-        Serial.print("Save User Data ");
-        EEPROM.readString(0, output, EEPROM_SIZE);
-        Serial.println(output);
-        index = 0;
-        err_chk_1 = 0;
-        err_chk_2 = 0;
-        input_flag = false;
-        break;
-      } else {
-        Serial.println("Input Error!");
-        memset(input, '\0', 240);
-        index = 0;
-        err_chk_1 = 0;
-        err_chk_2 = 0;
-      }
-      input_flag = false;
-    }
-  }
+                Serial.print("Save User Data ");
+                EEPROM.readString(0, output, EEPROM_SIZE);
+                Serial.println(output);
+                index = 0;
+                err_chk_1 = 0;
+                err_chk_2 = 0;
+                input_flag = false;
+                break;
+            } 
+            else 
+            {
+                Serial.println("Input Error!");
+                memset(input, '\0', 240);
+                index = 0;
+                err_chk_1 = 0;
+                err_chk_2 = 0;
+            }
+            input_flag = false;
+        }
+    }   
 
-  Serial.println("--------------------------------");
-  Serial.println("Reset User Data END");
-  Serial.println("--------------------------------");
+    Serial.println("--------------------------------");
+    Serial.println("Reset User Data END");
+    Serial.println("--------------------------------");
 
 parse:
-  for (int i = 0; i < EEPROM_SIZE; i++) {
-    if (output[i] == '[') {
-      param_start++;
-    } else if (output[i] == ']') {
-      param_end++;
-      if (param_end == 4) break;
-      data = 0;
-    } else {
-      if (param_start == 1) {
-        my_data.wifi_id[data] = output[i];
-        data++;
-      }
-      if (param_start == 2) {
-        my_data.wifi_pw[data] = output[i];
-        data++;
-      }
-      if (param_start == 3) {
-        my_data.bus_id[data] = output[i];
-        data++;
-      }
-
-      if (param_start == 4) {
-        my_data.stock_num[data] = output[i];
-        data++;
-      }
+    for (int i = 0; i < EEPROM_SIZE; i++)   
+    {
+        if (output[i] == '[')
+        {
+            param_start++;
+        }
+        else if (output[i] == ']') 
+        {
+            param_end++;
+            if (param_end == 6) break;
+            data = 0;
+        } 
+        else 
+        {
+            if (param_start == 1) 
+            {
+                myData.wifiId[data] = output[i];
+                data++;
+            }
+            if (param_start == 2) 
+            {
+                myData.wifiPw[data] = output[i];
+                data++;
+            }
+            if (param_start == 3) 
+            {
+                myData.city[data] = output[i];
+                data++;
+            }
+            if (param_start == 4) 
+            {
+                myData.bus[data] = output[i];
+                data++;
+            }
+            if (param_start == 5) 
+            {
+                myData.KR[data] = output[i];
+                data++;
+            }
+            if (param_start == 6) 
+            {
+                myData.US[data] = output[i];
+                data++;
+            }
+        }
     }
-  }
+    param_start = 0;
 
-  param_start = 0;
+    printf("[WIFI ID] %s\r\n", myData.wifiId);
+    printf("[WIFI PW] %s\r\n", myData.wifiPw);
+    printf("[CITY] %s\r\n", myData.city);
+    printf("[BUS] %s\r\n", myData.bus);
+    printf("[KR STOCK] %s\r\n", myData.KR);
+    printf("[US STOCK] %s\r\n", myData.US);
 
-  printf("[WIFI ID] %s \r\n", my_data.wifi_id);
-  printf("[WIFI PW] %s \r\n", my_data.wifi_pw);
-  printf("[BUS] %s \r\n", my_data.bus_id);
-  printf("[STOCK] %s \r\n", my_data.stock_num);
+    parseUserData(); 
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 
-  initWiFi();
+    img.pushImage(0, 0, 240, 240, DUCK_HI_240);
+    img.pushSprite(0, 0);
 
-  // neopixelWrite(RGB_BUILTIN,0x00,0xFF,0x00); // green
+    tft.setCursor(35, 80);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(3);
+    tft.print("HI");
+
+    initWiFi();
+    delay(3000);
+
+    while(!getBusStationId(myBus.mobileNo)) delay(1000);
+    while(!getStaOrder(myBus.stationId, myBus.routeName)) delay(1000);
+}
+
+void parseUserData()
+{
+    Serial.println("-------------------------------------");
+    Serial.println("[PARSE] User Data");
+
+    // City1, 2 파싱
+    for(int i = 0, num = 0, index = 0; i < sizeof(myData.city); i++)
+    {
+        if(num == 0)
+        {
+            if(myData.city[i] == ',')
+            {
+                num++;
+                index = 0;
+                continue;
+            }
+            myWeather.city[num][index++] = myData.city[i];
+        }
+        else if(num == 1)
+        {
+            if(myData.city[i] == '\0')
+            {
+                break;
+            }
+            myWeather.city[num][index++] = myData.city[i];
+        }
+    }
+    printf("[CITY1] %s\r\n", myWeather.city[0]);
+    printf("[CITY2] %s\r\n", myWeather.city[1]);
+
+    // 정류장, 버스 파싱
+    char mobileNoBuf[10];
+    for(int i = 0, num = 0, index = 0; i < sizeof(myData.bus); i++)
+    {
+        if(num == 0)
+        {
+            if(myData.bus[i] == ',')
+            {
+                num++;
+                index = 0;
+                continue;
+            }
+            myBus.routeName[index++] = myData.bus[i];
+        }
+        else if(num == 1)
+        {
+            if(myData.bus[i] == '\0')
+            {
+                break;
+            }
+            mobileNoBuf[index++] = myData.bus[i];
+        }
+    }
+    myBus.mobileNo = atoi(mobileNoBuf);
+    printf("[BUS] %s\r\n", myBus.routeName);
+    printf("[STATION] %d\r\n", myBus.mobileNo);
+
+    // 국내 주식 파싱
+    for(int i = 0, num = 0, index = 0; i < sizeof(myData.KR); i++)
+    {
+        if(num == 0)
+        {
+            if(myData.KR[i] == ',')
+            {
+                num++;
+                index = 0;
+                continue;
+            }
+            myStockKR.code[num][index++] = myData.KR[i];
+        }
+        else if(num == 1)
+        {
+            if(myData.KR[i] == ',')
+            {
+                num++;
+                index = 0;
+                continue;
+            }
+            myStockKR.code[num][index++] = myData.KR[i];
+        }
+        else if(num == 2)
+        {
+            if(myData.KR[i] == '\0')
+            {
+                break;
+            }
+            myStockKR.code[num][index++] = myData.KR[i];
+        }
+    }
+    printf("[KR1] %s\r\n", myStockKR.code[0]);
+    printf("[KR2] %s\r\n", myStockKR.code[1]);
+    printf("[KR3] %s\r\n", myStockKR.code[2]);
+
+    // 해외 주식 파싱
+    for(int i = 0, num = 0, index = 0; i < sizeof(myData.US); i++)
+    {
+        if(num == 0)
+        {
+            if(myData.US[i] == ',')
+            {
+                myStockUS.name[num][index++] = '\0';
+                num++;
+                index = 0;
+                continue;
+            }
+            myStockUS.name[num][index++] = myData.US[i];
+        }
+        else if(num == 1)
+        {
+            if(myData.US[i] == ',')
+            {
+                 myStockUS.name[num][index++] = '\0';
+                num++;
+                index = 0;
+                continue;
+            }
+            myStockUS.name[num][index++] = myData.US[i];
+        }
+        else if(num == 2)
+        {
+            if(myData.US[i] == '\0')
+            {
+                myStockUS.name[num][index++] = '\0';
+                break;
+            }
+            myStockUS.name[num][index++] = myData.US[i];
+        }
+    }
+    printf("[US1] %s\r\n", myStockUS.name[0]);
+    printf("[US2] %s\r\n", myStockUS.name[1]);
+    printf("[US3] %s\r\n", myStockUS.name[2]);
+
+    Serial.println("-------------------------------------");
 }
 
 void initWiFi() {
   uint8_t wifi_timeout = 0;
   Serial.println("WIFI Connecting");
-  WiFi.begin(my_data.wifi_id, my_data.wifi_pw);
+  WiFi.begin(myData.wifiId, myData.wifiPw);
 
   if (checkWiFiStatus())
     Serial.println("WIFI CONNECTED");
   else {
     Serial.println();
     Serial.println("WiFi Not Connected, Check [WiFi ID][WiFi PW]");
-    resetUserData(1);
+    getUserData(1);
   }
 }
 
@@ -390,305 +686,341 @@ bool checkWiFiStatus() {
   return 1;
 }
 
-void getDateTime() {
-  Serial.println("-------------------------------------");
-  Serial.println("[REQUEST] Date/Time");
-
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    Serial.println("[ERROR]");
-    Serial.println("-------------------------------------");
-    return;
-  }
-
-  myTime.year = timeinfo.tm_year + 1900;
-  printf("[연도] %d\r\n", myTime.year);
-
-  myTime.mon = timeinfo.tm_mon + 1;
-  printf("[월] %d\r\n", myTime.mon);
-
-  myTime.mday = timeinfo.tm_mday;
-  printf("[일] %d\r\n", myTime.mday);
-
-  myTime.wday = timeinfo.tm_wday;
-  printf("[요일] %d\r\n", myTime.wday);
-
-  myTime.hour = timeinfo.tm_hour;
-  printf("[시] %d\r\n", myTime.hour);
-
-  myTime.min = timeinfo.tm_min;
-  printf("[분] %d\r\n", myTime.min);
-
-  myTime.sec = timeinfo.tm_sec;
-  printf("[초] %d\r\n", myTime.sec);
-
-  img.pushImage(0, 0, 240, 240, DUCK_TIME_240);
-  img.pushSprite(0, 0);
-
-  tft.setCursor(80, 50);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(3);
-
-  if (myTime.mon < 10) tft.print("0");
-  tft.print(myTime.mon);
-  tft.print("/");
-  if (myTime.mday < 10) tft.print("0");
-  tft.print(myTime.mday);
-
-  tft.setCursor(80, 80);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(3);
-
-  if (myTime.hour < 10) tft.print("0");
-  tft.print(myTime.hour);
-  tft.print(":");
-  if (myTime.min < 10) tft.print("0");
-  tft.println(myTime.min);
-
-  Serial.println("-------------------------------------");
-}
-
-void getWeather(const char* city) {
-  Serial.println("-------------------------------------");
-  Serial.println("[REQUEST] Weather");
-
-  int httpCode;
-  char buffer[256];
-  strcpy(myWeather.city, city);
-
-  snprintf(buffer, sizeof(buffer), "http://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s", myWeather.city, OPENWEATHER_API_KEY);
-  myHTTP.begin(mySocket, buffer);
-  delay(100);
-
-  httpCode = myHTTP.GET();
-  printf("[HTTP CODE] %d \r\n", httpCode);
-
-  if (httpCode == HTTP_CODE_OK) {
-    Serial.println("[OK]");
-    deserializeJson(jsonDoc, myHTTP.getString());
-  } else {
-    Serial.println("[ERROR]");
-  }
-  myHTTP.end();
-
-  const char* city_r = jsonDoc["name"];
-  const char* weather = jsonDoc["weather"][0]["main"];
-  myWeather.temp = (int)(jsonDoc["main"]["temp"]) - 273.0;
-
-  strcpy(myWeather.city, city_r);
-  strcpy(myWeather.weather, weather);
-
-  printf("[도시] %s \r\n", myWeather.city);
-  printf("[날씨] %s \r\n", myWeather.weather);
-  printf("[기온] %d \r\n", myWeather.temp);
-
-  img.pushImage(0, 0, 240, 240, DUCK_WEATHER_240);
-  img.pushSprite(0, 0);
-
-  tft.setCursor(60, 40);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(3);
-  tft.print(myWeather.city);
-
-  tft.setCursor(60, 70);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(3);
-  tft.print(myWeather.weather);
-
-  tft.setCursor(60, 100);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(3);
-  tft.print(myWeather.temp);
-  tft.print("C");
-
-  Serial.println("-------------------------------------");
-}
-
-void getBusStationId(int mobileNo) {
-  Serial.println("-------------------------------------");
-  Serial.println("[REQUEST] Bus Station ID");
-
-  int httpCode;
-  char buffer[300];
-  myBus.mobileNo = mobileNo;
-
-  snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/6410000/busstationservice/getBusStationList?serviceKey=%s&keyword=%d", PUBLIC_DATA_API_KEY, myBus.mobileNo);
-  myHTTP.begin(mySocket, buffer);
-
-  httpCode = myHTTP.GET();
-  printf("[HTTP CODE] %d \r\n", httpCode);
-
-  if (httpCode == HTTP_CODE_OK) {
-    Serial.println("[OK]");
-    strcpy(xmlDoc, myHTTP.getString().c_str());
-  } else {
-    Serial.println("[ERROR]");
-    myHTTP.end();
-    Serial.println("-------------------------------------");
-    return;
-  }
-  myHTTP.end();
-
-  XMLDocument xmlDocument;
-  if (xmlDocument.Parse(xmlDoc) != XML_SUCCESS) {
-    Serial.println("[PARSE ERROR]");
-    myHTTP.end();
-    Serial.println("-------------------------------------");
-    return;
-  };
-
-  XMLNode* root = xmlDocument.RootElement();
-
-  // 정류소 아이디
-  XMLElement* element = root->FirstChildElement("msgBody")->FirstChildElement("busStationList")->FirstChildElement("stationId");
-  element->QueryIntText(&myBus.stationId);
-  printf("[정류소 아이디] %d\r\n", myBus.stationId);
-
-  // 정류소 명
-  element = root->FirstChildElement("msgBody")->FirstChildElement("busArrivalItem")->FirstChildElement("stationName");
-  strcpy(myBus.stationName, element->GetText());
-  printf("[정류소 명] %d분후\r\n", myBus.stationName);
-
-  Serial.println("-------------------------------------");
-}
-
-void getStaOrder(int stationId, const char* routeName) {
-  Serial.println("-------------------------------------");
-  Serial.println("[REQUEST] Bus StaOrder");
-
-  int httpCode;
-  char buffer[300];
-  myBus.stationId = stationId;
-  strcpy(myBus.routeName, routeName);
-
-  snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/6410000/busstationservice/getBusStationViaRouteList?serviceKey=%s&stationId=%d", PUBLIC_DATA_API_KEY, myBus.stationId);
-  myHTTP.begin(mySocket, buffer);
-
-  if (myHTTP.GET() == HTTP_CODE_OK) {
-    Serial.println("[OK]");
-    strcpy(xmlDoc, myHTTP.getString().c_str());
-  } else {
-    Serial.println("[ERROR]");
-    myHTTP.end();
-    Serial.println("-------------------------------------");
-    return;
-  }
-
-  XMLDocument xmlDocument;
-  if (xmlDocument.Parse(xmlDoc) != XML_SUCCESS) {
-    Serial.println("[PARSE ERROR]");
-    myHTTP.end();
-    Serial.println("-------------------------------------");
-    return;
-  };
-
-  XMLNode* root = xmlDocument.RootElement();
-  XMLElement* element = root->FirstChildElement("msgBody")->FirstChildElement("busStationList")->FirstChildElement("routeName");
-
-  for (XMLElement* routeName = element; routeName != NULL; routeName->NextSiblingElement()) {
-    strcpy(myBus.routeName_temp, element->GetText());
-
-    if (strcpy(myBus.routeName_temp, myBus.routeName) == 0) {
-      XMLElement* ele1 = root->FirstChildElement("msgBody")->FirstChildElement("busStationList")->FirstChildElement("routeId");
-      ele1->QueryIntText(&myBus.routeId);
-
-      XMLElement* ele2 = root->FirstChildElement("msgBody")->FirstChildElement("busStationList")->FirstChildElement("staOrder");
-      ele2->QueryIntText(&myBus.staOrder);
-
-      break;
-    }
-  }
-
-  Serial.print("Bus routeId : ");
-  Serial.println(myBus.routeId);
-  Serial.print("Bus staOrder : ");
-  Serial.println(myBus.staOrder);
-
-  myHTTP.end();
-}
-
-void getBusArrival(const char* routeName, int stationId, int routeId, int staOrder)  // getBusArrivalItem Operation
+bool getDateTime() 
 {
-  Serial.println("-------------------------------------");
-  Serial.println("[REQUEST] BUS Arrival");
-
-  int httpCode;
-  char buffer[300];
-  char routeName_local[30];
-
-  strcpy(routeName_local, routeName);
-  myBus.stationId = stationId;
-  myBus.routeId = routeId;
-  myBus.staOrder = staOrder;
-
-  snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/6410000/busarrivalservice/getBusArrivalItem?serviceKey=%s&stationId=%d&routeId=%d&staOrder=%d", PUBLIC_DATA_API_KEY, myBus.stationId, myBus.routeId, myBus.staOrder);
-  myHTTP.begin(mySocket, buffer);
-
-  httpCode = myHTTP.GET();
-  printf("[HTTP CODE] %d \r\n", httpCode);
-
-  if (httpCode == HTTP_CODE_OK) {
-    Serial.println("[OK]");
-    strcpy(xmlDoc, myHTTP.getString().c_str());
-  } else {
-    Serial.println("[ERROR]");
-    myHTTP.end();
     Serial.println("-------------------------------------");
-    return;
-  }
+    Serial.println("[REQUEST] Date/Time");
 
-  XMLDocument xmlDocument;
-  if (xmlDocument.Parse(xmlDoc) != XML_SUCCESS) {
-    Serial.println("[PARSE ERROR]");
+    // 화면 전환
+    img.pushImage(0, 0, 240, 240, DUCK_TIME_240);
+    img.pushSprite(0, 0);
+
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        Serial.println("[ERROR]");
+        Serial.println("-------------------------------------");
+        return false;
+    }
+
+    myTime.year = timeinfo.tm_year + 1900;
+    printf("[연도] %d\r\n", myTime.year);
+
+    myTime.mon = timeinfo.tm_mon + 1;
+    printf("[월] %d\r\n", myTime.mon);
+
+    myTime.mday = timeinfo.tm_mday;
+    printf("[일] %d\r\n", myTime.mday);
+
+    myTime.wday = timeinfo.tm_wday;
+    printf("[요일] %d\r\n", myTime.wday);
+
+    myTime.hour = timeinfo.tm_hour;
+    printf("[시] %d\r\n", myTime.hour);
+
+    myTime.min = timeinfo.tm_min;
+    printf("[분] %d\r\n", myTime.min);
+
+    myTime.sec = timeinfo.tm_sec;
+    printf("[초] %d\r\n", myTime.sec);
+
+    // 월/일 시간:분
+    tft.setCursor(80, 50);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(3);
+
+    if (myTime.mon < 10) tft.print("0");
+    tft.print(myTime.mon);
+    tft.print("/");
+    if (myTime.mday < 10) tft.print("0");
+    tft.print(myTime.mday);
+
+    tft.setCursor(80, 80);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(3);
+
+    if (myTime.hour < 10) tft.print("0");
+    tft.print(myTime.hour);
+    tft.print(":");
+    if (myTime.min < 10) tft.print("0");
+    tft.println(myTime.min);
+
     Serial.println("-------------------------------------");
-    return;
-  };
-  myHTTP.end();
-
-  XMLNode* root = xmlDocument.RootElement();
-
-  // 첫번째차량 위치정보
-  XMLElement* element = root->FirstChildElement("msgBody")->FirstChildElement("busArrivalItem")->FirstChildElement("locationNo1");
-  element->QueryIntText(&myBus.locationNo1);
-  printf("[첫번째버스 위치정보] %d번째전 정류소\r\n", myBus.locationNo1);
-
-  // 첫번째차량 도착예상시간
-  element = root->FirstChildElement("msgBody")->FirstChildElement("busArrivalItem")->FirstChildElement("predictTime1");
-  element->QueryIntText(&myBus.predictTime1);
-  printf("[첫번째버스 도착예상시간] %d분후\r\n", myBus.locationNo1);
-
-  // 두번째차량 위치정보
-  element = root->FirstChildElement("msgBody")->FirstChildElement("busArrivalItem")->FirstChildElement("locationNo2");
-  element->QueryIntText(&myBus.locationNo2);
-  printf("[두번재버스 위치정보] %d번째전 정류소\r\n", myBus.locationNo2);
-
-  // 두째차량 도착예상시간
-  element = root->FirstChildElement("msgBody")->FirstChildElement("busArrivalItem")->FirstChildElement("predictTime2");
-  element->QueryIntText(&myBus.predictTime2);
-  printf("[두번재버스 도착예상시간] %d분후\r\n", myBus.predictTime2);
-
-  img.pushImage(0, 0, 240, 240, DUCK_BUS_240);
-  img.pushSprite(0, 0);
-
-  tft.setCursor(80, 50);
-  tft.setTextColor(TFT_WHITE);
-  tft.setTextSize(3);
-
-  tft.print(routeName_local);
-
-  Serial.println("-------------------------------------");
+    return true;
 }
 
-void getStockPriceKRPreviousDay(const char* code)  // 한국주식 전날 시세
+bool getWeather(const char* city) 
+{
+    Serial.println("-------------------------------------");
+    Serial.println("[REQUEST] Weather");
+
+    // 화면 전환
+    img.pushImage(0, 0, 240, 240, DUCK_WEATHER_240);
+    img.pushSprite(0, 0);
+
+    WiFiClient mySocket;
+    HTTPClient myHTTP;
+
+    int httpCode;
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "http://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s", city, OPENWEATHER_API_KEY);
+    myHTTP.begin(mySocket, buffer);
+    delay(500);
+
+    httpCode = myHTTP.GET();
+    printf("[HTTP CODE] %d \r\n", httpCode);
+
+    if (httpCode == HTTP_CODE_OK) 
+    {
+        Serial.println("[OK]");
+        deserializeJson(jsonDoc, myHTTP.getString());
+    } 
+    else 
+    {
+        Serial.println("[ERROR]");
+        myHTTP.end();
+        Serial.println("-------------------------------------");
+        return false;
+    }
+    myHTTP.end();
+
+    const char* weather = jsonDoc["weather"][0]["main"];
+    strcpy(myWeather.weather, weather);
+    myWeather.temp = (int)(jsonDoc["main"]["temp"]) - 273.0;
+
+    printf("[도시] %s \r\n", city);
+    printf("[날씨] %s \r\n", myWeather.weather);
+    printf("[기온] %d \r\n", myWeather.temp);
+
+    // 도시
+    tft.setCursor(60, 40);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(3);
+    tft.print(city);
+
+    // 날씨
+    tft.setCursor(60, 70);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(3);
+    tft.print(myWeather.weather);
+
+    // 기온
+    tft.setCursor(60, 100);
+    tft.setTextColor(TFT_WHITE);
+    tft.setTextSize(3);
+    tft.print(myWeather.temp);
+    tft.print("C");
+
+    Serial.println("-------------------------------------");
+    return true;
+}
+
+bool getBusStationId(int mobileNo) 
+{
+    Serial.println("-------------------------------------");
+    Serial.println("[REQUEST] Bus Station ID");
+
+    WiFiClient mySocket;
+    HTTPClient myHTTP;
+
+    int httpCode;
+    char buffer[300];
+    myBus.mobileNo = mobileNo;
+
+    snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/6410000/busstationservice/getBusStationList?serviceKey=%s&keyword=%d",PUBLIC_DATA_API_KEY, myBus.mobileNo);
+    myHTTP.begin(mySocket, buffer);
+    delay(500);
+
+    httpCode = myHTTP.GET();
+    printf("[HTTP CODE] %d \r\n", httpCode);
+
+    if (httpCode == HTTP_CODE_OK) 
+    {
+        Serial.println("[OK]");
+        strcpy(xmlDoc, myHTTP.getString().c_str());
+    } 
+    else 
+    {
+        Serial.println("[ERROR]");
+        myHTTP.end();
+        Serial.println("-------------------------------------");
+        return false;
+    }
+    myHTTP.end();
+
+    XMLDocument xmlDocument;
+    if (xmlDocument.Parse(xmlDoc) != XML_SUCCESS) 
+    {
+        Serial.println("[PARSE ERROR]");
+        myHTTP.end();
+        Serial.println("-------------------------------------");
+        return false;
+    };
+
+    XMLNode* root = xmlDocument.RootElement();
+
+    // 정류소아이디
+    XMLElement* element = root->FirstChildElement("msgBody")->FirstChildElement("busStationList")->FirstChildElement("stationId");
+    element->QueryIntText(&myBus.stationId);
+    printf("[정류소아이디] %d\r\n", myBus.stationId);
+
+    // 정류소명
+    element = root->FirstChildElement("msgBody")->FirstChildElement("busStationList")->FirstChildElement("stationName");
+    strcpy(myBus.stationName, element->GetText());
+    printf("[정류소명] %s\r\n", myBus.stationName);
+
+    Serial.println("-------------------------------------");
+    return true;
+}
+
+bool getStaOrder(int stationId, const char* routeName) 
+{
+    Serial.println("-------------------------------------");
+    Serial.println("[REQUEST] Bus StaOrder");
+
+    WiFiClient mySocket;
+    HTTPClient myHTTP;
+
+    int httpCode;
+    char buffer[300];
+
+    snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/6410000/busstationservice/getBusStationViaRouteList?serviceKey=%s&stationId=%d", PUBLIC_DATA_API_KEY, stationId);
+    myHTTP.begin(mySocket, buffer);
+    delay(500);
+
+    if (myHTTP.GET() == HTTP_CODE_OK) {
+        Serial.println("[OK]");
+        strcpy(xmlDoc, myHTTP.getString().c_str());
+    } 
+    else 
+    {
+        Serial.println("[ERROR]");
+        myHTTP.end();
+        Serial.println("-------------------------------------");
+        return false;
+    }
+    myHTTP.end();
+
+    XMLDocument xmlDocument;
+    if (xmlDocument.Parse(xmlDoc) != XML_SUCCESS) 
+    {
+        Serial.println("[PARSE ERROR]");
+        myHTTP.end();
+        Serial.println("-------------------------------------");
+        return false;
+  };
+
+    XMLNode* root = xmlDocument.RootElement();
+    XMLElement* element = root->FirstChildElement("msgBody")->FirstChildElement("busRouteList");
+
+    char routeNameBuf[30];
+    for (XMLElement* routeList = element; routeList != NULL; routeList = routeList->NextSiblingElement()) 
+    {
+        strcpy(routeNameBuf, routeList->FirstChildElement("routeName")->GetText());
+        printf("%s\r\n", routeNameBuf);
+
+        if (strcmp(routeNameBuf, routeName) == 0) 
+        {
+            routeList->FirstChildElement("routeId")->QueryIntText(&myBus.routeId);
+            routeList->FirstChildElement("staOrder")->QueryIntText(&myBus.staOrder);
+            break;
+        }
+    }
+
+    printf("[노선아이디] %d\r\n", myBus.routeId);
+    printf("[정류소순번] %d\r\n", myBus.staOrder);
+
+    Serial.println("-------------------------------------");
+    return true;
+}
+
+bool getBusArrival(const char* routeName, int stationId, int routeId, int staOrder)  // getBusArrivalItem Operation
+{
+    Serial.println("-------------------------------------");
+    Serial.println("[REQUEST] BUS Arrival");
+
+    // 화면 전환
+    img.pushImage(0, 0, 240, 240, DUCK_BUS_240);
+    img.pushSprite(0, 0);
+
+    WiFiClient mySocket;
+    HTTPClient myHTTP;
+
+    int httpCode;
+    char buffer[300];
+    memset(xmlDoc, 0, sizeof(xmlDoc));
+
+    snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/6410000/busarrivalservice/getBusArrivalItem?serviceKey=%s&stationId=%d&routeId=%d&staOrder=%d", PUBLIC_DATA_API_KEY, stationId, routeId, staOrder);
+    myHTTP.begin(mySocket, buffer);
+    delay(500);
+
+    httpCode = myHTTP.GET();
+    printf("[HTTP CODE] %d \r\n", httpCode);
+
+    if (httpCode == HTTP_CODE_OK) 
+    {
+        Serial.println("[OK]");
+        strcpy(xmlDoc, myHTTP.getString().c_str());
+    } 
+    else 
+    {
+        Serial.println("[ERROR]");
+        myHTTP.end();
+        Serial.println("-------------------------------------");
+        return false;
+    }
+    myHTTP.end();
+
+    XMLDocument xmlDocument;
+    if (xmlDocument.Parse(xmlDoc) != XML_SUCCESS) 
+    {
+        Serial.println("[PARSE ERROR]");
+        Serial.println("-------------------------------------");
+        return false;
+    };
+
+    XMLNode* root = xmlDocument.RootElement();
+
+    // 첫번째차량 위치정보
+    XMLElement* element = root->FirstChildElement("msgBody")->FirstChildElement("busArrivalItem")->FirstChildElement("locationNo1");
+    element->QueryIntText(&myBus.locationNo1);
+    printf("[첫번째버스 위치정보] %d번째전 정류소\r\n", myBus.locationNo1);
+
+    // 첫번째차량 도착예상시간
+    element = root->FirstChildElement("msgBody")->FirstChildElement("busArrivalItem")->FirstChildElement("predictTime1");
+    element->QueryIntText(&myBus.predictTime1);
+    printf("[첫번째버스 도착예상시간] %d분후\r\n", myBus.predictTime1);
+
+    // 정류소명
+    String staStr(myBus.stationName);
+    int nameLen = strlen(myBus.stationName) / 3;
+    AimHangul_v2(120 - (float)(nameLen/2) * 16, 50, staStr, TFT_WHITE);  // 중앙정렬
+
+    // 버스와 도착 시간
+    char preBuf[20];
+    snprintf(preBuf, sizeof(preBuf), "%s  %d분", myBus.routeName, myBus.predictTime1);
+    String preStr(preBuf);
+    AimHangul_v2(35, 100, preStr, TFT_WHITE);  // 중앙정렬
+
+    Serial.println("-------------------------------------");
+    return true;
+}
+
+bool getStockPriceKRPreviousDay(const char* code)  // 한국주식 전날 시세
 {
     Serial.println("-------------------------------------");
     Serial.println("[REQUEST] KR stock");
 
+    // 화면 전환
+    img.pushImage(0, 0, 240, 240, DUCK_STOCK_KR_240);
+    img.pushSprite(0, 0);
+
+    WiFiClient mySocket;
+    HTTPClient myHTTP;
+
     int httpCode;
     char buffer[300];
-    strcpy(myStockKR.code, code);
 
-    snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo?serviceKey=%s&numOfRows=1&pageNo=1&likeSrtnCd=%s", PUBLIC_DATA_API_KEY, myStockKR.code);
+    snprintf(buffer, sizeof(buffer), "http://apis.data.go.kr/1160100/service/GetStockSecuritiesInfoService/getStockPriceInfo?serviceKey=%s&numOfRows=1&pageNo=1&likeSrtnCd=%s", PUBLIC_DATA_API_KEY, code);
     myHTTP.begin(mySocket, buffer);
     delay(500);
 
@@ -702,7 +1034,7 @@ void getStockPriceKRPreviousDay(const char* code)  // 한국주식 전날 시세
         Serial.println("[ERROR]");
         myHTTP.end();
         Serial.println("-------------------------------------");
-        return;
+        return false;
     }
     myHTTP.end();
 
@@ -710,7 +1042,7 @@ void getStockPriceKRPreviousDay(const char* code)  // 한국주식 전날 시세
     if (xmlDocument.Parse(xmlDoc) != XML_SUCCESS) {
         Serial.println("[PARSE ERROR]");
         Serial.println("-------------------------------------");
-        return;
+        return false;
     };
 
     XMLNode* root = xmlDocument.RootElement();
@@ -740,9 +1072,6 @@ void getStockPriceKRPreviousDay(const char* code)  // 한국주식 전날 시세
     element = root->FirstChildElement("body")->FirstChildElement("items")->FirstChildElement("item")->FirstChildElement("fltRt");
     strcpy(myStockKR.percentChange, element->GetText());
     printf("[등락률] %s \r\n", myStockKR.percentChange);
-
-    img.pushImage(0, 0, 240, 240, DUCK_STOCK_KR_240);
-    img.pushSprite(0, 0);
 
     // 날짜
     tft.setCursor(120-(12*4), 30); // 중앙정렬
@@ -777,19 +1106,24 @@ void getStockPriceKRPreviousDay(const char* code)  // 한국주식 전날 시세
     tft.print(changeBuffer);
 
     Serial.println("-------------------------------------");
+    return true;
 }
 
-void getStockPriceUSRealTime(const char* name)  // 미국주식 실시간 시세
+bool getStockPriceUSRealTime(const char* name)  // 미국주식 실시간 시세
 {
     Serial.println("-------------------------------------");
     Serial.println("[REQUEST] US Stock");
-
-    int httpCode;
-    char buffer[256];
-    strcpy(myStockUS.name, name);
-    snprintf(buffer, sizeof(buffer), "https://finnhub.io/api/v1/quote?symbol=%s&token=%s", myStockUS.name, FINNHUB_STOCK_API_KEY);
+ 
+    // 화면 전환
+    img.pushImage(0, 0, 240, 240, DUCK_STOCK_US_240);
+    img.pushSprite(0, 0);
 
     WiFiClientSecure* client = new WiFiClientSecure;
+    HTTPClient myHTTP;
+
+    int httpCode;
+    char buffer[300];
+    snprintf(buffer, sizeof(buffer), "https://finnhub.io/api/v1/quote?symbol=%s&token=%s", name, FINNHUB_STOCK_API_KEY);
     client->setInsecure();
     myHTTP.begin(*client, buffer);
     delay(500);
@@ -797,13 +1131,17 @@ void getStockPriceUSRealTime(const char* name)  // 미국주식 실시간 시세
     httpCode = myHTTP.GET();
     printf("[HTTP CODE] %d \r\n", httpCode);
 
-    if (httpCode == HTTP_CODE_OK) {
+    if (httpCode == HTTP_CODE_OK) 
+    {
         Serial.println("[OK]");
         deserializeJson(jsonDoc, myHTTP.getString());
-    } else {
+    } 
+    else 
+    {
         Serial.println("[ERROR]");
         myHTTP.end();
         Serial.println("-------------------------------------");
+        return false;
     }
     myHTTP.end();
 
@@ -812,14 +1150,11 @@ void getStockPriceUSRealTime(const char* name)  // 미국주식 실시간 시세
     myStockUS.change = (float)(jsonDoc["d"]);
     myStockUS.percentChange = (float)(jsonDoc["dp"]);
 
-    printf("[종목명] %s \r\n", myStockUS.name);
+    printf("[종목명] %s \r\n", name);
     printf("[기준일자] %d \r\n", myStockUS.date);
     printf("[현재가] %.2f \r\n", myStockUS.currentPrice);
     printf("[대비] %.2f \r\n", myStockUS.change);
     printf("[등락률] %.2f \r\n", myStockUS.percentChange);
-
-    img.pushImage(0, 0, 240, 240, DUCK_STOCK_US_240);
-    img.pushSprite(0, 0);
 
     time_t rawTime = myStockUS.date;
     struct tm ts;
@@ -840,11 +1175,11 @@ void getStockPriceUSRealTime(const char* name)  // 미국주식 실시간 시세
     tft.print(ts.tm_sec);
 
     // 종목명
-    int nameLen = strlen(myStockUS.name);
+    int nameLen = strlen(name);
     tft.setCursor(120 - (float)(nameLen/2) * 18, 55);  // 중앙정렬
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(3);
-    tft.print(myStockUS.name);
+    tft.print(name);
 
     // 현재가
     char curPriceBuf[10];
@@ -865,6 +1200,7 @@ void getStockPriceUSRealTime(const char* name)  // 미국주식 실시간 시세
     tft.setTextSize(2);
     tft.print(changeBuf);
 
-  Serial.println("-------------------------------------");
+    Serial.println("-------------------------------------");
+    return true;
 }
 /***************************Function Definition************************************/
