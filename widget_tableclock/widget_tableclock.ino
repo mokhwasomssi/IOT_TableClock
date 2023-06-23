@@ -154,7 +154,7 @@ char xmlDoc[10000];
 /*************************** [Variable Declaration] ************************************/
 
 /*************************** [Function Declaration] ************************************/
-void clearUserData();
+void clearStructData();
 void getUserData(bool overwrite);
 void parseUserData();
 
@@ -176,14 +176,6 @@ void setup()
 {
     // put your setup code here, to run once:
     Serial.begin(115200);
-    touch.begin();
-
-    tft.init();
-    tft.setRotation(0);
-    tft.setSwapBytes(true);
-    img.setSwapBytes(true);
-    tft.fillScreen(TFT_WHITE);
-    img.createSprite(240, 240);
 
     Serial.println();
     Serial.println();
@@ -193,7 +185,24 @@ void setup()
     Serial.println();
     Serial.println();
 
+    Serial.println("-------------------------------------");
+    Serial.println("[SETUP] Start]");
+    Serial.println("-------------------------------------");
+
+    touch.begin();
+
+    tft.init();
+    tft.setRotation(0);
+    tft.setSwapBytes(true);
+    img.setSwapBytes(true);
+    tft.fillScreen(TFT_WHITE);
+    img.createSprite(240, 240);
+
     getUserData(0);
+
+    Serial.println("-------------------------------------");
+    Serial.println("[SETUP] End");
+    Serial.println("-------------------------------------");
 }
 
 uint32_t tick_cur = 0;
@@ -342,7 +351,7 @@ ignore:
 }
 
 /***************************Function Definition************************************/
-void clearUserData() 
+void clearStructData() 
 {
   memset(&myData, 0, sizeof(USER_DATA));
   memset(&myTime, 0, sizeof(TIME));
@@ -392,10 +401,11 @@ void getUserData(bool overwrite)
         goto parse;
 
 reset:
-    clearUserData();
+    clearStructData();
 
     Serial.println("--------------------------------");
-    Serial.println("Reset User Data Start");
+    Serial.println("[START] Reset User Data");
+    Serial.println();
 
     Serial.println("Clear User Data");
     for (int i = 0; i < EEPROM_SIZE; i++) EEPROM.write(i, 0xFF);
@@ -403,7 +413,6 @@ reset:
     delay(500);
 
     Serial.println("Enter [WiFi ID][WiFi PW][CITY1, CITY2][BUS, STATION][KR1, KR2, KR3][US1, US2, US3]");
-    Serial.println("--------------------------------");
 
     while (1)  // wait user data
     {
@@ -446,8 +455,7 @@ reset:
         }
     }   
 
-    Serial.println("--------------------------------");
-    Serial.println("Reset User Data END");
+    Serial.println("[END] Reset User Data");
     Serial.println("--------------------------------");
 
 parse:
@@ -1082,26 +1090,26 @@ bool getStockPriceKRPreviousDay(const char* code)  // 한국주식 전날 시세
     // 종목
     String str(myStockKR.name);
     int nameLen = strlen(myStockKR.name) / 3;
-    printf("name len %d\r\n", nameLen);
+    // printf("name len %d\r\n", nameLen);
     AimHangul_v2(120 - (float)(nameLen/2) * 16, 50, str, TFT_WHITE);  // 중앙정렬
 
     // 종가
     int closePriceLen = strlen(myStockKR.closePrice);
-    printf("closePriceLen %d\r\n", closePriceLen);
+    // printf("closePriceLen %d\r\n", closePriceLen);
     tft.setCursor(120 - (float)(closePriceLen/2) * 20, 50 + 36);  // 중앙정렬
     tft.setTextColor(TFT_WHITE);
     tft.setTextSize(3);
     tft.print(myStockKR.closePrice);
-    printf("%d\r\n", tft.getCursorX());
+    // printf("%d\r\n", tft.getCursorX());
 
     // 대비, 등락률
     char changeBuffer[50];
     snprintf(changeBuffer, sizeof(changeBuffer), "%s %s%%", myStockKR.change, myStockKR.percentChange);
     int changeBufferLen = strlen(changeBuffer);
-    printf("changeBufferLen %d\r\n", changeBufferLen);
+    // printf("changeBufferLen %d\r\n", changeBufferLen);
     tft.setCursor(120 - (float)(changeBufferLen/2) * 12, 50 + 36 + 30);  // 중앙정렬
-    if (myStockKR.change[0] == '+') tft.setTextColor(TFT_RED, TFT_WHITE, 1);
-    else tft.setTextColor(TFT_BLUE, TFT_WHITE, 1);
+    if (myStockKR.change[0] == '-') tft.setTextColor(TFT_BLUE, TFT_WHITE, 1);
+    else tft.setTextColor(TFT_RED, TFT_WHITE, 1);
     tft.setTextSize(2);
     tft.print(changeBuffer);
 
